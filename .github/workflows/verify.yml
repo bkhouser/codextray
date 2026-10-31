@@ -1,0 +1,59 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 8 * * 1'
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Scan source and history for secrets
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip'
+          $zip = Join-Path $env:RUNNER_TEMP 'gitleaks.zip'
+          Invoke-WebRequest $url -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'd29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e') { throw 'Scanner checksum mismatch' }
+          $dir = Join-Path $env:RUNNER_TEMP 'gitleaks'
+          Expand-Archive $zip $dir
+          & "$dir/gitleaks.exe" git . --redact --no-banner
+          if ($LASTEXITCODE -ne 0) { throw 'History secret scan failed' }
+          & "$dir/gitleaks.exe" dir . --redact --no-banner
+          if ($LASTEXITCODE -ne 0) { throw 'Source secret scan failed' }
+      - name: Check .NET runtime servicing
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props -Raw
+          $pinned = [version]$props.Project.PropertyGroup.RuntimeFrameworkVersion
+          $metadata = Invoke-RestMethod 'https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json'
+          if ($pinned -lt [version]$metadata.'latest-runtime') { throw 'Pinned runtime is behind .NET 10 servicing. Update runtime, locks and release validation.' }
+      - run: dotnet restore CodexTray.slnx --locked-mode
+      - run: dotnet build CodexTray.slnx -c Release --no-restore
+      - run: dotnet test tests/CodexTray.Tests/CodexTray.Tests.csproj -c Release --no-build --no-restore --blame-hang-timeout 30s --blame-hang-dump-type none
+      - run: dotnet list CodexTray.slnx package --vulnerable --include-transitive
+      - run: dotnet publish src/CodexTray/CodexTray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:RestoreLockedMode=true --output artifacts/publish
+      - name: Assemble reviewable Windows package
+        shell: pwsh
+        run: ./scripts/New-ReleasePackage.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CodexTray-windows-x64
+          path: artifacts/package
+          if-no-files-found: error
+          retention-days: 14
+# No authenticated LiveSmoke, deployment, publishing, or secrets are used.

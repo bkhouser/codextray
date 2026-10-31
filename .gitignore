@@ -1,0 +1,17 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+TestResults/
+artifacts/
+app/
+.env
+.env.local
+.env.*
+*.log
+*.pfx
+*.p12
+*.key
+api-billing.dat*
+.instance.lock

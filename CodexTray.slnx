@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/CodexTray.Core/CodexTray.Core.csproj" />
+  <Project Path="src/CodexTray/CodexTray.csproj" />
+  <Project Path="tests/CodexTray.Tests/CodexTray.Tests.csproj" />
+  <Project Path="tools/CodexTray.LiveSmoke/CodexTray.LiveSmoke.csproj" />
+</Solution>
