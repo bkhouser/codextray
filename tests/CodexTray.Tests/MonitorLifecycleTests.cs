@@ -17,6 +17,11 @@ public sealed class MonitorLifecycleTests
 
         monitor.Start();
         await WaitUntilAsync(() => factory.Processes.Count >= 2, TimeSpan.FromSeconds(5));
+        Assert.Equal(MonitorConnectionState.Connecting, monitor.Status.State);
+        Assert.Null(monitor.Status.Snapshot);
+        factory.AllowReplacementInitialize();
+        await WaitUntilAsync(() => monitor.Status is
+            { State: MonitorConnectionState.Connected, Snapshot: not null }, TimeSpan.FromSeconds(5));
 
         Assert.True(factory.Processes[0].HasExited);
         Assert.False(factory.Processes[1].HasExited);
@@ -46,15 +51,23 @@ public sealed class MonitorLifecycleTests
     private sealed class FakeProcessFactory : IAppServerProcessFactory
     {
         private readonly object _gate = new();
+        private readonly List<FakeProcess> _processes = [];
+        private readonly TaskCompletionSource _replacementInitialize = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public List<FakeProcess> Processes { get; } = [];
+        public IReadOnlyList<FakeProcess> Processes
+        {
+            get { lock (_gate) return _processes.ToArray(); }
+        }
+
+        public void AllowReplacementInitialize() => _replacementInitialize.TrySetResult();
 
         public IAppServerProcess Start(string executablePath)
         {
             lock (_gate)
             {
-                var process = new FakeProcess(exitAfterFirstQuota: Processes.Count == 0);
-                Processes.Add(process);
+                var process = new FakeProcess(exitAfterFirstQuota: _processes.Count == 0,
+                    initializeGate: _processes.Count == 0 ? Task.CompletedTask : _replacementInitialize.Task);
+                _processes.Add(process);
                 return process;
             }
         }
@@ -67,11 +80,13 @@ public sealed class MonitorLifecycleTests
         private readonly LineChannel _stderr = new();
         private readonly TaskCompletionSource _exit = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly bool _exitAfterFirstQuota;
+        private readonly Task _initializeGate;
         private int _stopCalls;
 
-        public FakeProcess(bool exitAfterFirstQuota)
+        public FakeProcess(bool exitAfterFirstQuota, Task initializeGate)
         {
             _exitAfterFirstQuota = exitAfterFirstQuota;
+            _initializeGate = initializeGate;
             _ = RunServerAsync();
         }
 
@@ -112,6 +127,7 @@ public sealed class MonitorLifecycleTests
                     var method = root.GetProperty("method").GetString();
                     if (method == "initialize")
                     {
+                        await _initializeGate;
                         await _serverToClient.WriteAsync(JsonSerializer.Serialize(new
                         {
                             id = root.GetProperty("id").GetInt64(),
